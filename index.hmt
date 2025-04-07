@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S3 Bulk File Uploader</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .uploader {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+        }
+        .uploader.highlight {
+            border-color: #4CAF50;
+            background-color: rgba(76, 175, 80, 0.1);
+        }
+        .file-list {
+            margin-top: 20px;
+        }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            align-items: center;
+        }
+        .progress-container {
+            flex-grow: 1;
+            margin: 0 20px;
+        }
+        .progress-bar {
+            height: 8px;
+            background-color: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress {
+            height: 100%;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .status {
+            font-size: 14px;
+            width: 80px;
+            text-align: right;
+        }
+        .status.complete {
+            color: #4CAF50;
+        }
+        .status.error {
+            color: #f44336;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>S3 Bulk File Uploader</h1>
+
+    <div class="uploader" id="drop-area">
+        <p>Drag & drop files here or click to select files</p>
+        <input type="file" id="fileInput" multiple class="hidden">
+        <button id="selectFiles">Select Files</button>
+    </div>
+
+    <div id="upload-controls">
+        <button id="uploadButton" disabled>Upload All Files</button>
+        <button id="clearButton" disabled>Clear All</button>
+    </div>
+
+    <div class="file-list" id="fileList"></div>
+
+    <script>
+        // Configuration - Replace with your API endpoint
+        const API_ENDPOINT = 'https://fileupload.aiguru.pro/generate-bulk-upload-urls';
+
+        // DOM Elements
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('fileInput');
+        const selectFilesBtn = document.getElementById('selectFiles');
+        const uploadBtn = document.getElementById('uploadButton');
+        const clearBtn = document.getElementById('clearButton');
+        const fileList = document.getElementById('fileList');
+
+        // File storage
+        let files = [];
+
+        // Event listeners for drag and drop
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight() {
+            dropArea.classList.add('highlight');
+        }
+
+        function unhighlight() {
+            dropArea.classList.remove('highlight');
+        }
+
+        // Handle file drop
+        dropArea.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const newFiles = [...dt.files];
+            addFiles(newFiles);
+        }
+
+        // Handle file select button
+        selectFilesBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', function() {
+            addFiles([...this.files]);
+            this.value = null; // Reset input to allow selecting the same files again
+        });
+
+        // Handle upload button
+        uploadBtn.addEventListener('click', uploadFiles);
+
+        // Handle clear button
+        clearBtn.addEventListener('click', clearFiles);
+
+        // Add files to the list
+        function addFiles(newFiles) {
+            newFiles.forEach(file => {
+                // Create a unique ID for this file
+                const fileId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+
+                files.push({
+                    id: fileId,
+                    file: file,
+                    status: 'pending' // pending, uploading, complete, error
+                });
+
+                // Add to UI
+                const fileItem = document.createElement('div');
+                fileItem.className = 'file-item';
+                fileItem.dataset.id = fileId;
+
+                fileItem.innerHTML = `
+                    <div class="file-name">${file.name} (${formatFileSize(file.size)})</div>
+                    <div class="progress-container">
+                        <div class="progress-bar">
+                            <div class="progress" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="status">Pending</div>
+                    <button class="remove-btn">✕</button>
+                `;
+
+                // Add remove button functionality
+                const removeBtn = fileItem.querySelector('.remove-btn');
+                removeBtn.addEventListener('click', () => {
+                    removeFile(fileId);
+                });
+
+                fileList.appendChild(fileItem);
+            });
+
+            updateButtons();
+        }
+
+        // Remove a file from the list
+        function removeFile(fileId) {
+            files = files.filter(f => f.id !== fileId);
+            const fileElement = document.querySelector(`.file-item[data-id="${fileId}"]`);
+            if (fileElement) {
+                fileElement.remove();
+            }
+
+            updateButtons();
+        }
+
+        // Clear all files
+        function clearFiles() {
+            files = [];
+            fileList.innerHTML = '';
+            updateButtons();
+        }
+
+        // Update button states
+        function updateButtons() {
+            uploadBtn.disabled = files.length === 0;
+            clearBtn.disabled = files.length === 0;
+        }
+
+        // Format file size for display
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Upload files to S3
+        async function uploadFiles() {
+            if (files.length === 0) return;
+
+            // Disable buttons during upload
+            uploadBtn.disabled = true;
+            clearBtn.disabled = true;
+
+            try {
+                // Prepare file information for backend
+                const fileInfoArray = files.map(f => ({
+                    fileName: f.file.name,
+                    contentType: f.file.type || 'application/octet-stream'
+                }));
+
+                // Request presigned URLs from server
+                const response = await fetch(API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ files: fileInfoArray })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to get presigned URLs');
+                }
+
+                const data = await response.json();
+                const { presignedUrls } = data;
+
+                // Upload files in parallel
+                const uploadPromises = files.map((fileObj, index) => {
+                    const urlData = presignedUrls[index];
+                    if (!urlData) return Promise.reject(new Error('No presigned URL for file'));
+
+                    return uploadFileWithProgress(
+                        fileObj.file,
+                        urlData.uploadURL,
+                        fileObj.id
+                    );
+                });
+
+                await Promise.allSettled(uploadPromises);
+
+            } catch (error) {
+                console.error('Upload error:', error);
+                alert('An error occurred during the upload process: ' + error.message);
+            } finally {
+                // Re-enable buttons
+                updateButtons();
+            }
+        }
+
+        // Upload a single file with progress tracking
+        function uploadFileWithProgress(file, presignedUrl, fileId) {
+            return new Promise((resolve, reject) => {
+                // Update UI to show upload started
+                updateFileStatus(fileId, 'uploading', 0);
+
+                // Create XHR for upload with progress tracking
+                const xhr = new XMLHttpRequest();
+
+                // Setup progress tracking
+                xhr.upload.addEventListener('progress', (event) => {
+                    if (event.lengthComputable) {
+                        const percentComplete = (event.loaded / event.total) * 100;
+                        updateFileStatus(fileId, 'uploading', percentComplete);
+                    }
+                });
+
+                // Setup completion handler
+                xhr.addEventListener('load', () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        updateFileStatus(fileId, 'complete', 100);
+                        resolve();
+                    } else {
+                        updateFileStatus(fileId, 'error', 0);
+                        reject(new Error(`Upload failed with status ${xhr.status}`));
+                    }
+                });
+
+                // Setup error handler
+                xhr.addEventListener('error', () => {
+                    updateFileStatus(fileId, 'error', 0);
+                    reject(new Error('Network error occurred during upload'));
+                });
+
+                // Setup abort handler
+                xhr.addEventListener('abort', () => {
+                    updateFileStatus(fileId, 'error', 0);
+                    reject(new Error('Upload aborted'));
+                });
+
+                // Start upload
+                xhr.open('PUT', presignedUrl, true);
+                xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                xhr.send(file);
+            });
+        }
+
+        // Update file status in UI
+        function updateFileStatus(fileId, status, progress) {
+            const fileElement = document.querySelector(`.file-item[data-id="${fileId}"]`);
+            if (!fileElement) return;
+
+            const progressBar = fileElement.querySelector('.progress');
+            const statusElement = fileElement.querySelector('.status');
+
+            // Update the file object status
+            const fileObj = files.find(f => f.id === fileId);
+            if (fileObj) {
+                fileObj.status = status;
+            }
+
+            // Update progress bar
+            if (progressBar) {
+                progressBar.style.width = `${progress}%`;
+            }
+
+            // Update status text
+            if (statusElement) {
+                statusElement.className = 'status'; // Reset classes
+
+                switch (status) {
+                    case 'uploading':
+                        statusElement.textContent = `${Math.round(progress)}%`;
+                        break;
+                    case 'complete':
+                        statusElement.textContent = 'Complete';
+                        statusElement.classList.add('complete');
+                        break;
+                    case 'error':
+                        statusElement.textContent = 'Failed';
+                        statusElement.classList.add('error');
+                        break;
+                    default:
+                        statusElement.textContent = 'Pending';
+                }
+            }
+        }
+    </script>
+</body>
+</html>
